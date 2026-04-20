@@ -1,6 +1,4 @@
-﻿using Azure;
-using Microsoft.AspNetCore.Cors;
-using Microsoft.AspNetCore.Identity;
+﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.Data;
 using Microsoft.AspNetCore.Mvc;
 using PsyClinic.Api.Services;
@@ -11,6 +9,8 @@ using PsyClinic.Infrasctructure.Models;
 [Route("api/[controller]")]
 public class AuthController : ControllerBase
 {
+    public const string AccessTokenCookieName = "access_token";
+
     private readonly UserManager<User> _userManager;
     private readonly SignInManager<User> _signInManager;
     private readonly JwtTokenService _jwtTokenService;
@@ -41,19 +41,11 @@ public class AuthController : ControllerBase
 
         if (!result.Succeeded)
         {
-            var response = new ValidationErrorResponse();
+            var translatedErrors = result.Errors
+                .Select(error => IdentityErrorTranslator.Translate(error.Code))
+                .ToList();
 
-            foreach (var error in result.Errors)
-            {
-                response.Errors.Add(IdentityErrorTranslator.Translate(error.Code));
-            }
-
-            return BadRequest(new ResponseUserViewModel
-            {
-                Status = true,
-                Code = 400,
-                Errors = response.Errors
-            });
+            return BadRequest(CreateErrorResponse(400, translatedErrors));
         }
 
         return Ok(new ResponseUserViewModel
@@ -67,39 +59,26 @@ public class AuthController : ControllerBase
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
+        var cancellationToken = HttpContext.RequestAborted;
         var user = await _userManager.FindByEmailAsync(request.Email);
 
-        if (user == null)
-            return Unauthorized(
-                new ResponseUserViewModel
-                {
-                    Message = "Usuário ou senha inválidos.",
-                    Status = true,
-                    Code = 401
-                });
+        if (user is null)
+        {
+            return Unauthorized(CreateErrorResponse(401, ["Usuário ou senha inválidos."]));
+        }
 
-        var result = await _signInManager.CheckPasswordSignInAsync(user, request.Password, false);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var result = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: false);
 
         if (!result.Succeeded)
-            return Unauthorized(new ResponseUserViewModel
-            {
-                Message = "Usuário ou senha inválidos.",
-                Status = true,
-                Code = 401
-            });
+        {
+            return Unauthorized(CreateErrorResponse(401, ["Usuário ou senha inválidos."]));
+        }
 
         var token = _jwtTokenService.GenerateToken(user);
 
-        var cookieOptions = new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = true,
-            SameSite = SameSiteMode.None,
-            Expires = DateTime.Now.AddMinutes(60),
-            Path = "/"
-        };
-
-        Response.Cookies.Append("access_token", token, cookieOptions);
+        Response.Cookies.Append(AccessTokenCookieName, token, BuildAuthCookieOptions());
 
         return Ok(new ResponseUserViewModel
         {
@@ -114,7 +93,7 @@ public class AuthController : ControllerBase
     [HttpPost("logout")]
     public IActionResult Logout()
     {
-        Response.Cookies.Delete("access_token");
+        Response.Cookies.Delete(AccessTokenCookieName);
 
         return Ok(new ResponseUserViewModel
         {
@@ -123,4 +102,21 @@ public class AuthController : ControllerBase
             Code = 200
         });
     }
+
+    private static ResponseUserViewModel CreateErrorResponse(int code, List<string> errors) => new()
+    {
+        Status = false,
+        Code = code,
+        Errors = errors,
+        Message = code == 401 ? "Usuário ou senha inválidos." : "Falha ao processar a solicitação."
+    };
+
+    private static CookieOptions BuildAuthCookieOptions() => new()
+    {
+        HttpOnly = true,
+        Secure = true,
+        SameSite = SameSiteMode.None,
+        Expires = DateTimeOffset.UtcNow.AddMinutes(60),
+        Path = "/"
+    };
 }

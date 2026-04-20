@@ -9,7 +9,7 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddDbContext<AppDbContext>(
+builder.Services.AddDbContextPool<AppDbContext>(
     options => options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services
@@ -36,10 +36,11 @@ builder.Services.AddAuthentication(options =>
     {
         OnMessageReceived = context =>
         {
-            if (context.Request.Cookies.ContainsKey("access_token"))
+            if (context.Request.Cookies.ContainsKey(AuthController.AccessTokenCookieName))
             {
-                context.Token = context.Request.Cookies["access_token"];
+                context.Token = context.Request.Cookies[AuthController.AccessTokenCookieName];
             }
+
             return Task.CompletedTask;
         }
     };
@@ -66,7 +67,7 @@ builder.Services.AddCors(options =>
             .WithOrigins("http://localhost:3000")
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowCredentials(); 
+            .AllowCredentials();
     });
 });
 
@@ -78,6 +79,8 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+
+app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -91,7 +94,5 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-
-app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 app.Run();
